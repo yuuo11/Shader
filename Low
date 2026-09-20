@@ -1,0 +1,119 @@
+Shader "Custom/Down_Shader"
+{
+    Properties
+    {
+        _Color ("Color", Color) = (1,1,1,1)
+        _MainTex ("Albedo (RGB)", 2D) = "white" {}
+        _Glossiness ("Smoothness", Range(0,1)) = 0.5
+        _Metallic ("Metallic", Range(0,1)) = 0.0
+
+        _PixelX ("Pixel X", Float) = 320
+        _PixelY ("Pixel Y", Float) = 180
+        _ColorSteps ("Color Steps", Float) = 8
+    }
+
+    SubShader
+    {
+        Tags { "RenderType"="Opaque" }
+        LOD 200
+
+        Pass   
+        {
+            CGPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            #pragma multi_compile_fwdbase
+            #pragma target 3.0
+
+            #include "UnityCG.cginc"
+            #include "Lighting.cginc"
+            #include "AutoLight.cginc"
+
+
+            sampler2D _MainTex;
+
+            float _PixelX;
+            float _PixelY;
+            float _ColorSteps;
+
+            struct appdata
+            {
+                float4 vertex : POSITION;
+                float2 uv : TEXCOORD0;
+                float3 normal : NORMAL;
+            };
+
+            struct v2f
+            {
+                float4 vertex : SV_POSITION;
+                float2 uv : TEXCOORD0;
+                float3 normal : TEXCOORD1;
+                SHADOW_COORDS(2)
+            };
+
+            v2f vert (appdata v)
+            {
+                v2f o;
+
+                
+                float snap = 100.0;
+                v.vertex.xy = floor(v.vertex.xy * snap) / snap;
+
+                o.vertex = UnityObjectToClipPos(v.vertex);
+                o.uv = v.uv;
+
+                o.normal = UnityObjectToWorldNormal(v.normal);
+
+                TRANSFER_SHADOW(o);
+
+                return o;
+            }
+
+            fixed4 frag (v2f i) : SV_Target
+            {
+                
+                float2 pixelCount = float2(_PixelX, _PixelY);
+                float2 uv = floor(i.uv * pixelCount + 0.5) / pixelCount;
+
+                fixed4 col = tex2D(_MainTex, uv);
+
+                col.rgb = floor(col.rgb * _ColorSteps) / _ColorSteps;
+
+                // 라이트 방향
+                float3 lightDir = normalize(_WorldSpaceLightPos0.xyz);
+
+                // 기본 조명
+                float NdotL = dot(normalize(i.normal), lightDir);
+
+                NdotL = (NdotL * 0.5) + 0.5;
+
+                // 0~1로 클램프
+                //NdotL = saturate(NdotL);
+
+                // 단계 제한
+                //NdotL = floor(NdotL * 5) / 5;
+
+                NdotL = step(0.3, NdotL);
+
+                // 그림자 적용
+                float shadow = SHADOW_ATTENUATION(i);
+
+                // 그림자도 같이 끊기게
+                //shadow = floor(shadow * 2) / 2;
+
+                float light = NdotL * shadow;
+                light = max(light, 0.3);
+
+
+                // 최종 적용    
+                col.rgb *= light;
+
+                return col;
+            }
+
+            ENDCG
+        }
+    }
+
+    FallBack "Diffuse"
+}
