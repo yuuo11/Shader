@@ -1,0 +1,285 @@
+Shader "Custom/Toon_Shader_URP"
+{
+    Properties
+    {
+        _BaseColor ("Color", Color) = (1,1,1,1) // 기본 색상 (URP는 _Color 대신 _BaseColor 쓰긔)
+        _BaseMap ("Albedo (RGB)", 2D) = "white" {} // 기본 텍스처 (_MainTex 대신 _BaseMap 쓰긔)
+        _ShadowColor ("Shadow Color", Color) = (0.4, 0.4, 0.5, 1) // 그림자 색상 (검정 방지용이긔)
+        _Threshold ("Shade Threshold", Range(0,1)) = 0.5 // 명암 경계 위치
+        _Softness ("Edge Softness", Range(0.001,0.1)) = 0.02 // 경계 부드러움 (자글거림 방지)
+        _OutlineColor ("Outline Color", Color) = (0,0,0,1) // 외곽선 색상
+        _Outline ("Outline Width", Range(0.002, 0.03)) = 0.005 // 외곽선 두께
+    }
+
+    SubShader
+    {
+        Tags
+        {
+            "RenderType" = "Opaque"
+            "RenderPipeline" = "UniversalPipeline" // URP에서만 돌아가게 하긔
+            "Queue" = "Geometry"
+        }
+        LOD 200
+
+        // ─────────────── 1) 아웃라인 패스 ───────────────
+        Pass
+        {
+            Name "Outline"
+            Tags { "LightMode" = "SRPDefaultUnlit" } // URP가 기본으로 추가 렌더해주는 태그긔
+
+            Cull Front // 앞면 제거 -> 뒷면만 렌더링
+
+            HLSLPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+
+            // UnityCG.cginc 대신 URP Core 라이브러리 가져오긔
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+
+            // SRP Batcher 쓰려면 모든 패스의 CBUFFER가 똑같아야 하긔 (안 쓰는 변수도 그대로 넣기)
+            CBUFFER_START(UnityPerMaterial)
+                float4 _BaseMap_ST;
+                half4  _BaseColor;
+                half4  _ShadowColor;
+                half   _Threshold;
+                half   _Softness;
+                half4  _OutlineColor;
+                float  _Outline;
+            CBUFFER_END
+
+            struct Attributes // 모델의 데이터 묶음 받긔 / 버텍스 정보 가져오는 컨테이너 (appdata랑 같은 역할)
+            {
+                float4 positionOS : POSITION; // 오브젝트 공간 정점 위치 받긔
+                float3 normalOS   : NORMAL;   // 외곽선 두께에 필요한 노말벡터 == 법선벡터
+            };
+
+            struct Varyings // 버텍스 -> 프레그먼트로 넘겨주는 데이터 (v2f랑 같은 역할)
+            {
+                float4 positionCS : SV_POSITION; // 화면 위치 받긔
+            };
+
+            Varyings vert (Attributes v) // 버텍스 쉐이더
+            {
+                Varyings o;
+
+                // 정점을 클립 공간(Clip Space)으로 변환하긔
+                o.positionCS = TransformObjectToHClip(v.positionOS.xyz);
+
+                // 법선(Normal)을 오브젝트 -> 월드 공간으로 변환하긔 (회전, 스케일 반영)
+                float3 normalWS = TransformObjectToWorldNormal(v.normalOS);
+
+                // 월드 -> 뷰 공간으로 한 번 더 변환하긔 (UNITY_MATRIX_IT_MV 대체)
+                float3 normalVS = normalize(TransformWorldToViewDir(normalWS));
+
+                // 뷰 공간에서의 법선 방향을 투영 공간(화면 방향)으로 변환하긔 (종횡비, FOV 반영)
+                float2 offset = mul((float2x2)UNITY_MATRIX_P, normalVS.xy);
+
+                // w를 곱해서 거리에 상관없이 일정한 두께 유지하긔
+                o.positionCS.xy += offset * _Outline * o.positionCS.w;
+
+                return o;
+            }
+
+            half4 frag (Varyings i) : SV_Target // 프레그먼트 셰이더 / 픽셀셰이더
+            {
+                // 단색으로 칠하긔
+                return _OutlineColor;
+            }
+            ENDHLSL
+        }
+
+        // ─────────────── 2) 툰 라이팅 패스 (Surface Shader의 LightingToon 대체) ───────────────
+        Pass
+        {
+            Name "ForwardLit"
+            Tags { "LightMode" = "UniversalForward" } // URP 메인 포워드 렌더링 패스긔
+
+            Cull Back // 원래대로 앞면만 그리긔
+
+            HLSLPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+
+            // 그림자 받으려면 필요한 키워드들이긔 (없으면 그림자가 안 생김)
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
+            #pragma multi_compile_fragment _ _SHADOWS_SOFT
+
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl" // GetMainLight() 쓰려고 가져오긔
+
+            // sampler2D 대신 URP 방식으로 텍스처 + 샘플러 따로 선언하긔
+            TEXTURE2D(_BaseMap);
+            SAMPLER(sampler_BaseMap);
+
+            CBUFFER_START(UnityPerMaterial)
+                float4 _BaseMap_ST;
+                half4  _BaseColor;
+                half4  _ShadowColor;
+                half   _Threshold;
+                half   _Softness;
+                half4  _OutlineColor;
+                float  _Outline;
+            CBUFFER_END
+
+            struct Attributes // 모델에서 받아오는 데이터 묶음이긔
+            {
+                float4 positionOS : POSITION;  // 정점 위치
+                float3 normalOS   : NORMAL;    // 노말벡터 (명암 계산에 필요하긔)
+                float2 uv         : TEXCOORD0; // 텍스처 좌표
+            };
+
+            struct Varyings // 프레그먼트 셰이더로 넘겨줄 데이터긔
+            {
+                float4 positionCS : SV_POSITION; // 화면 위치
+                float2 uv         : TEXCOORD0;   // 텍스처 좌표
+                float3 normalWS   : TEXCOORD1;   // 월드 공간 노말 (빛 방향이랑 내적하려고 월드로 맞추긔)
+                float3 positionWS : TEXCOORD2;   // 월드 공간 위치 (그림자 좌표 계산에 필요하긔)
+            };
+
+            Varyings vert (Attributes v) // 버텍스 셰이더
+            {
+                Varyings o;
+
+                o.positionWS = TransformObjectToWorld(v.positionOS.xyz);   // 오브젝트 -> 월드 위치
+                o.positionCS = TransformWorldToHClip(o.positionWS);        // 월드 -> 클립 위치
+                o.normalWS   = TransformObjectToWorldNormal(v.normalOS);   // 노말도 월드로 변환하긔
+                o.uv         = TRANSFORM_TEX(v.uv, _BaseMap);              // 타일링, 오프셋 적용하긔
+
+                return o;
+            }
+
+            half4 frag (Varyings i) : SV_Target // 프레그먼트 셰이더 (여기가 LightingToon + surf 역할이긔)
+            {
+                // 텍스처 색 * 틴트 색 (surf 함수의 c 계산이랑 같음)
+                half4 albedo = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, i.uv) * _BaseColor;
+
+                // 보간되면서 길이가 흐트러졌으니 다시 정규화하긔
+                float3 N = normalize(i.normalWS);
+
+                // 이 픽셀의 그림자 좌표를 구해서 메인 라이트(Directional Light) 정보 가져오긔
+                float4 shadowCoord = TransformWorldToShadowCoord(i.positionWS);
+                Light mainLight = GetMainLight(shadowCoord); // color, direction, shadowAttenuation 들어있음
+
+                // 내적하긔 (하프 램버트로 0~1 범위로 바꾸긔)
+                half NdotL = dot(N, mainLight.direction) * 0.5 + 0.5;
+
+                // 경계 나누긔 (step 대신 smoothstep 써서 경계 자글거림 줄이긔)
+                half toon = smoothstep(_Threshold - _Softness, _Threshold + _Softness, NdotL);
+
+                // 그림자 나누긔 (mainLight.shadowAttenuation이 원래 atten 역할이긔)
+                toon *= smoothstep(0.25, 0.3, mainLight.shadowAttenuation);
+
+                // 어두운 곳은 검정 대신 그림자 색으로, 밝은 곳은 1(원색)로 섞기
+                half3 shade = lerp(_ShadowColor.rgb, 1.0, toon);
+
+                // 적용하긔 (mainLight.color가 원래 _LightColor0 역할이긔)
+                half3 color = albedo.rgb * mainLight.color * shade;
+
+                return half4(color, albedo.a);
+            }
+            ENDHLSL
+        }
+
+        // ─────────────── 3) 그림자 캐스팅 패스 (addshadow 대체) ───────────────
+        // 서피스 셰이더는 addshadow가 자동으로 만들어줬는데 URP는 직접 만들어야 하긔
+        Pass
+        {
+            Name "ShadowCaster"
+            Tags { "LightMode" = "ShadowCaster" } // 그림자 맵 그릴 때 URP가 호출하는 패스긔
+
+            ZWrite On     // 깊이만 기록하긔
+            ZTest LEqual
+            ColorMask 0   // 색상은 안 그리고 깊이만 쓰긔
+            Cull Back
+
+            HLSLPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            #pragma multi_compile_vertex _ _CASTING_PUNCTUAL_LIGHT_SHADOW // 점광원, 스폿 그림자용 키워드
+
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Shadows.hlsl" // ApplyShadowBias 쓰려고 가져오긔
+
+            // URP가 그림자 그릴 때 알아서 넣어주는 값들이긔
+            float3 _LightDirection;
+            float3 _LightPosition;
+
+            struct Attributes
+            {
+                float4 positionOS : POSITION; // 정점 위치
+                float3 normalOS   : NORMAL;   // 그림자 바이어스 계산에 필요하긔
+            };
+
+            struct Varyings
+            {
+                float4 positionCS : SV_POSITION;
+            };
+
+            Varyings vert (Attributes v)
+            {
+                Varyings o;
+
+                float3 positionWS = TransformObjectToWorld(v.positionOS.xyz);
+                float3 normalWS   = TransformObjectToWorldNormal(v.normalOS);
+
+                // 빛 방향 구하긔 (점광원이면 위치로 계산, 직사광이면 그대로 쓰기)
+            #if _CASTING_PUNCTUAL_LIGHT_SHADOW
+                float3 lightDirWS = normalize(_LightPosition - positionWS);
+            #else
+                float3 lightDirWS = _LightDirection;
+            #endif
+
+                // 그림자 바이어스 적용하긔 (그림자 여드름 == shadow acne 방지용이긔)
+                o.positionCS = TransformWorldToHClip(ApplyShadowBias(positionWS, normalWS, lightDirWS));
+
+                // near plane에 걸려서 그림자가 잘리는 거 방지하긔
+            #if UNITY_REVERSED_Z
+                o.positionCS.z = min(o.positionCS.z, UNITY_NEAR_CLIP_VALUE);
+            #else
+                o.positionCS.z = max(o.positionCS.z, UNITY_NEAR_CLIP_VALUE);
+            #endif
+
+                return o;
+            }
+
+            half4 frag (Varyings i) : SV_Target
+            {
+                return 0; // 색은 필요 없으니 아무거나 리턴하긔
+            }
+            ENDHLSL
+        }
+
+        // ─────────────── 4) 깊이 패스 (SSAO, 깊이 텍스처 등에 필요) ───────────────
+        Pass
+        {
+            Name "DepthOnly"
+            Tags { "LightMode" = "DepthOnly" } // 깊이 프리패스 때 URP가 호출하긔
+
+            ZWrite On
+            ColorMask R // 깊이만 쓸 거라 R 채널만 열어두긔
+            Cull Back
+
+            HLSLPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+
+            struct Attributes { float4 positionOS : POSITION; };   // 위치만 있으면 되긔
+            struct Varyings   { float4 positionCS : SV_POSITION; };
+
+            Varyings vert (Attributes v)
+            {
+                Varyings o;
+                o.positionCS = TransformObjectToHClip(v.positionOS.xyz); // 클립 공간으로 변환만 하긔
+                return o;
+            }
+
+            half4 frag (Varyings i) : SV_Target
+            {
+                return 0; // 깊이 값만 기록되면 되니까 색은 상관없긔
+            }
+            ENDHLSL
+        }
+    }
+}
