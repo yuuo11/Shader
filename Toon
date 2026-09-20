@@ -1,0 +1,116 @@
+Shader "Custom/Toon_Shader"
+{
+    Properties
+    {
+        _Color ("Color", Color) = (1,1,1,1)
+        _MainTex ("Albedo (RGB)", 2D) = "white" {}
+        _Glossiness ("Smoothness", Range(0,1)) = 0.5
+        _Metallic ("Metallic", Range(0,1)) = 0.0
+        _OutlineColor ("Outline Color", Color) = (0,0,0,1) // 외곽선 색상
+        _Outline ("Outline Width", Range (.002, 0.03)) = .005 // 외곽선 두께
+    }
+    SubShader
+    {
+        Pass
+        {
+            Cull Front // 앞면 제거 -> 뒷면만 렌더링
+
+            CGPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            #include "UnityCG.cginc"
+
+            struct appdata // 모델의 데이터 묶음 받긔 / 버텍스 정보 가져오는 컨테이느ㅓ
+            {
+                float4 vertex : POSITION; // 위치 데이터 받긔 / 그중의 정점만 쓰긔
+                float3 normal : NORMAL; // 외곽선 두께의 필요한 노말벡터 == 법선벡터
+            };
+
+            struct v2f
+            {
+                float4 pos : SV_POSITION; // 화면 위치 받긔
+            };
+
+            float _Outline;
+            float4 _OutlineColor;
+
+            v2f vert (appdata v) // 버텍스 쉐이더
+            {
+                v2f o;
+
+                // 정점을 클립 공간(Clip Space)으로 변환하긔
+                o.pos = UnityObjectToClipPos(v.vertex);
+
+                // 법선(Normal)을 클립 공간의 방향으로 변환긔
+                // UNITY_MATRIX_IT_MV 행렬을 사용하여 모델의 회전과 스케일을 반영
+                float3 norm = normalize(mul((float3x3)UNITY_MATRIX_IT_MV, v.normal));
+                
+                // 뷰 공간에서의 법선 방향을 투영 공간(화면 방향)으로 변환ㅇ어ㅣ
+                float2 offset = TransformViewToProjection(norm.xy);
+
+                // 거리에 상관없이 일정한 두께 유지하긔
+                o.pos.xy += offset * _Outline * o.pos.w;
+
+                return o;
+            }
+
+            half4 frag (v2f i) : SV_Target // 프레그먼트 셰이더 / 픽셀셰이더
+            {
+                // 단색으로 칠하긔
+                return _OutlineColor;
+            }
+            ENDCG
+        }
+
+        Tags { "RenderType"="Opaque" }
+        LOD 200
+
+        CGPROGRAM
+        #pragma surface surf Toon addshadow
+        #pragma target 3.0
+
+        sampler2D _MainTex;
+
+        struct Input
+        {
+            float2 uv_MainTex;
+        };
+
+        half _Glossiness;
+        half _Metallic;
+        fixed4 _Color;
+
+        
+        UNITY_INSTANCING_BUFFER_START(Props)
+            // put more per-instance properties here
+        UNITY_INSTANCING_BUFFER_END(Props)
+
+        void surf (Input IN, inout SurfaceOutput o)
+        {
+            fixed4 c = tex2D (_MainTex, IN.uv_MainTex) * _Color;
+            o.Albedo = c.rgb;
+            o.Alpha = c.a;
+        }
+
+        half4 LightingToon (SurfaceOutput s, half3 lightDir, half atten)
+        {
+            half NdotL = dot(s.Normal, lightDir); // 내적하긔
+            NdotL = (NdotL * 0.5) + 0.5;
+            
+            half toon = step(0.3, NdotL); // 경계 나누긔
+
+            half shadowStep = smoothstep(0.25, 0.3, atten); // 그림자 나누긔
+
+            // 적용하긔
+            half4 c;
+            c.rgb = s.Albedo * _LightColor0.rgb * toon * shadowStep;
+            c.a = s.Alpha;
+
+            // c.rgb = NdotL;
+
+            return c;
+        }
+        ENDCG
+    }
+    FallBack "Diffuse"
+}
